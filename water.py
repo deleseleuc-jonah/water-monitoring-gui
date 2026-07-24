@@ -83,10 +83,15 @@ plt.rcParams.update(
         "savefig.dpi": 300,
         "savefig.bbox": "tight",
         "savefig.pad_inches": 0.05,
-        "font.family": "serif",
-        "font.serif": ["Arial"],
+        "font.family": "sans-serif",
+        "font.sans-serif": [
+            "Segoe UI",  # Windows
+            "Helvetica Neue",  # macOS
+            "Arial",
+            "Liberation Sans",  # Linux
+            "DejaVu Sans",  # Matplotlib fallback
+        ],
         "mathtext.fontset": "stix",
-        "font.size": 11,
         "axes.linewidth": 1.0,
         "axes.labelsize": 11,
         "axes.labelweight": "bold",
@@ -141,7 +146,19 @@ CHECKBOX_KEYS = [
 
 CHART_TYPES = ["Plot", "Scatter"]
 MONTHS = list(range(1, 13))
-FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 17, 18]
+GUI_FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 17, 18]
+CHART_FONT_SIZES = list(range(6, 33))
+
+# These defaults match the chart font sizes used before the options were added.
+CHART_FONT_DEFAULTS = {
+    "title": 12,
+    "axis_label": 11,
+    "tick_label": 8,
+    "legend": 9,
+    "data_label": 10,
+    "report_title": 12,
+    "report_text": 10,
+}
 
 
 # Every user-editable control whose value should survive a restart.
@@ -169,6 +186,13 @@ PERSISTED_INPUT_KEYS = [
     "-ADVANCED-UPPER-LIMIT-COL-",
     "-SETTINGS-THEME-",
     "-SETTINGS-FONTSIZE-",
+    "-SETTINGS-CHART-TITLE-FONTSIZE-",
+    "-SETTINGS-CHART-AXIS-LABEL-FONTSIZE-",
+    "-SETTINGS-CHART-TICK-LABEL-FONTSIZE-",
+    "-SETTINGS-CHART-LEGEND-FONTSIZE-",
+    "-SETTINGS-CHART-DATA-LABEL-FONTSIZE-",
+    "-SETTINGS-CHART-REPORT-TITLE-FONTSIZE-",
+    "-SETTINGS-CHART-REPORT-TEXT-FONTSIZE-",
 ] + CHECKBOX_KEYS
 
 # Retrieve state if available
@@ -207,14 +231,61 @@ selected_theme = saved_choice(
     AVAILABLE_THEMES,
     sg.theme(),
 )
-selected_font_size = saved_choice(
+selected_gui_font_size = saved_choice(
     "-SETTINGS-FONTSIZE-",
-    FONT_SIZES,
+    GUI_FONT_SIZES,
     12,
 )
+selected_chart_title_font_size = saved_choice(
+    "-SETTINGS-CHART-TITLE-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["title"],
+)
+selected_chart_axis_label_font_size = saved_choice(
+    "-SETTINGS-CHART-AXIS-LABEL-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["axis_label"],
+)
+selected_chart_tick_label_font_size = saved_choice(
+    "-SETTINGS-CHART-TICK-LABEL-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["tick_label"],
+)
+selected_chart_legend_font_size = saved_choice(
+    "-SETTINGS-CHART-LEGEND-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["legend"],
+)
+selected_chart_data_label_font_size = saved_choice(
+    "-SETTINGS-CHART-DATA-LABEL-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["data_label"],
+)
+selected_chart_report_title_font_size = saved_choice(
+    "-SETTINGS-CHART-REPORT-TITLE-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["report_title"],
+)
+selected_chart_report_text_font_size = saved_choice(
+    "-SETTINGS-CHART-REPORT-TEXT-FONTSIZE-",
+    CHART_FONT_SIZES,
+    CHART_FONT_DEFAULTS["report_text"],
+)
 
-sg.set_options(font=("Arial", selected_font_size))
+sg.set_options(font=("Arial", selected_gui_font_size))
 sg.theme(selected_theme)
+
+# Apply the saved Matplotlib typography to charts created during this session.
+plt.rcParams.update(
+    {
+        "axes.titlesize": selected_chart_title_font_size,
+        "axes.labelsize": selected_chart_axis_label_font_size,
+        "xtick.labelsize": selected_chart_tick_label_font_size,
+        "ytick.labelsize": selected_chart_tick_label_font_size,
+        "legend.fontsize": selected_chart_legend_font_size,
+        "figure.titlesize": selected_chart_report_title_font_size,
+    }
+)
 
 def add_season_shading(
     ax,
@@ -817,9 +888,9 @@ def advanced_chart(data, values, meta_dict):
                     ax.annotate(
                         str(label),
                         (x, y),
-                        fontsize=7,
                         textcoords="offset points",
                         xytext=(4, 4),
+                        fontsize=selected_chart_data_label_font_size,
                     )
 
             if (
@@ -1064,14 +1135,14 @@ def advanced_chart(data, values, meta_dict):
                 "\n".join(correlation_lines),
                 ha="left",
                 va="top",
-                fontsize=11,
-                family="monospace",
                 transform=report_ax.transAxes,
+                fontsize=selected_chart_report_text_font_size,
             )
 
             report_fig.suptitle(
                 "Statistical Report",
                 fontweight="bold",
+                fontsize=selected_chart_report_title_font_size,
             )
 
         plt.show()
@@ -1544,9 +1615,27 @@ settings_tab = [
     [
         sg.Column(
             layout=[
-                [sg.Text("Note: To apply settings you must Save & Exit.")],
                 [
-                    sg.Text("Theme:", pad=(0, 30)),
+                    sg.Text(
+                        "Note: Save & Exit, then restart the application "
+                        "to apply these settings."
+                    )
+                ],
+                [
+                    sg.Text(
+                        "GUI Appearance",
+                        font=("Arial", 14, "bold"),
+                        pad=(0, 15),
+                    )
+                ],
+                [
+                    sg.Text(
+                        "These options affect application controls, "
+                        "not Matplotlib chart text."
+                    )
+                ],
+                [
+                    sg.Text("GUI theme:", size=(34, 1), pad=(0, 15)),
                     sg.Combo(
                         values=AVAILABLE_THEMES,
                         key="-SETTINGS-THEME-",
@@ -1555,12 +1644,129 @@ settings_tab = [
                     ),
                 ],
                 [
-                    sg.Text("Font Size:", pad=(0, 30)),
+                    sg.Text(
+                        "GUI font size (controls):",
+                        size=(34, 1),
+                        pad=(0, 30),
+                    ),
                     sg.Combo(
                         key="-SETTINGS-FONTSIZE-",
-                        values=FONT_SIZES,
-                        default_value=selected_font_size,
+                        values=GUI_FONT_SIZES,
+                        default_value=selected_gui_font_size,
                         readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [sg.HSep(pad=(0, 20))],
+                [
+                    sg.Text(
+                        "Chart Font Sizes (Matplotlib)",
+                        font=("Arial", 14, "bold"),
+                        pad=(0, 15),
+                    )
+                ],
+                [
+                    sg.Text(
+                        "These options affect newly created charts and "
+                        "statistical reports, not the GUI."
+                    )
+                ],
+                [
+                    sg.Text(
+                        "Chart title (axes title):",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-TITLE-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_title_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "X/Y axis labels:",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-AXIS-LABEL-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_axis_label_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "X/Y tick labels:",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-TICK-LABEL-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_tick_label_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "Legend text:",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-LEGEND-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_legend_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "Point/data labels (annotations):",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-DATA-LABEL-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_data_label_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "Statistical report title:",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-REPORT-TITLE-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_report_title_font_size,
+                        readonly=True,
+                        size=(6, 1),
+                    ),
+                ],
+                [
+                    sg.Text(
+                        "Statistical report text:",
+                        size=(34, 1),
+                        pad=(0, 10),
+                    ),
+                    sg.Combo(
+                        key="-SETTINGS-CHART-REPORT-TEXT-FONTSIZE-",
+                        values=CHART_FONT_SIZES,
+                        default_value=selected_chart_report_text_font_size,
+                        readonly=True,
+                        size=(6, 1),
                     ),
                 ],
             ],
