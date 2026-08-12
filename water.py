@@ -1,6 +1,5 @@
 import ctypes
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -33,6 +32,7 @@ import matplotlib.pyplot as plt
 
 from matplotlib.colors import is_color_like
 from cycler import cycler
+from scipy.stats import linregress, pearsonr, spearmanr
 
 
 CONFIG_DIR = (
@@ -94,6 +94,7 @@ plt.rcParams.update(
         "mathtext.fontset": "stix",
         "axes.linewidth": 1.0,
         "axes.labelsize": 11,
+        "lines.linewidth": 2,
         "axes.labelweight": "bold",
         "axes.titlesize": 12,
         "axes.titleweight": "bold",
@@ -114,7 +115,6 @@ plt.rcParams.update(
         "ytick.labelsize": 8,
         "legend.frameon": False,
         "legend.fontsize": 9,
-        "lines.linewidth": 1.5,
         "axes.prop_cycle": cycler(
             color=[
                 "#0072B2",
@@ -138,10 +138,17 @@ CHECKBOX_KEYS = [
     "-ADVANCED-GROUP?-",
     "-ADVANCED-LABELS?-",
     "-ADVANCED-LINEAR-REGRESSION-",
+    "-ADVANCED-ONE-TO-ONE-LINE-",
     "-ADVANCED-PEARSON-",
     "-ADVANCED-SPEARMAN-",
     "-ADVANCED-SHADING-",
     "-ADVANCED-CONFIDENCE-INTERVALS-",
+    "-ADVANCED-Y2-ENABLED-",
+    "-ADVANCED-Y2-LOGY-",
+    "-ADVANCED-Y2-LINEAR-REGRESSION-",
+    "-ADVANCED-Y2-PEARSON-",
+    "-ADVANCED-Y2-SPEARMAN-",
+    "-ADVANCED-Y2-CONFIDENCE-INTERVALS-",
 ]
 
 CHART_TYPES = ["Plot", "Scatter"]
@@ -184,6 +191,10 @@ PERSISTED_INPUT_KEYS = [
     "-WET-COLOR-",
     "-ADVANCED-LOWER-LIMIT-COL-",
     "-ADVANCED-UPPER-LIMIT-COL-",
+    "-ADVANCED-Y2-COL-",
+    "-ADVANCED-Y2-TYPE-",
+    "-ADVANCED-Y2-LOWER-LIMIT-COL-",
+    "-ADVANCED-Y2-UPPER-LIMIT-COL-",
     "-SETTINGS-THEME-",
     "-SETTINGS-FONTSIZE-",
     "-SETTINGS-CHART-TITLE-FONTSIZE-",
@@ -448,163 +459,6 @@ def get_summary_df(data):
     )
 
 
-def _beta_continued_fraction(a, b, x):
-    """Evaluate the continued fraction used by the incomplete beta function."""
-    maximum_iterations = 200
-    epsilon = 3e-14
-    minimum_value = 1e-300
-
-    combined = a + b
-    a_plus_one = a + 1.0
-    a_minus_one = a - 1.0
-
-    c_value = 1.0
-    d_value = 1.0 - combined * x / a_plus_one
-    if abs(d_value) < minimum_value:
-        d_value = minimum_value
-    d_value = 1.0 / d_value
-    result = d_value
-
-    for iteration in range(1, maximum_iterations + 1):
-        doubled_iteration = 2 * iteration
-        coefficient = (
-            iteration
-            * (b - iteration)
-            * x
-            / (
-                (a_minus_one + doubled_iteration)
-                * (a + doubled_iteration)
-            )
-        )
-
-        d_value = 1.0 + coefficient * d_value
-        if abs(d_value) < minimum_value:
-            d_value = minimum_value
-        c_value = 1.0 + coefficient / c_value
-        if abs(c_value) < minimum_value:
-            c_value = minimum_value
-        d_value = 1.0 / d_value
-        result *= d_value * c_value
-
-        coefficient = -(
-            (a + iteration)
-            * (combined + iteration)
-            * x
-            / (
-                (a + doubled_iteration)
-                * (a_plus_one + doubled_iteration)
-            )
-        )
-
-        d_value = 1.0 + coefficient * d_value
-        if abs(d_value) < minimum_value:
-            d_value = minimum_value
-        c_value = 1.0 + coefficient / c_value
-        if abs(c_value) < minimum_value:
-            c_value = minimum_value
-        d_value = 1.0 / d_value
-
-        delta = d_value * c_value
-        result *= delta
-        if abs(delta - 1.0) < epsilon:
-            break
-
-    return result
-
-
-def _regularized_incomplete_beta(a, b, x):
-    """Return the regularized incomplete beta function without SciPy."""
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
-
-    factor = math.exp(
-        math.lgamma(a + b)
-        - math.lgamma(a)
-        - math.lgamma(b)
-        + a * math.log(x)
-        + b * math.log1p(-x)
-    )
-
-    if x < (a + 1.0) / (a + b + 2.0):
-        return (
-            factor
-            * _beta_continued_fraction(a, b, x)
-            / a
-        )
-
-    return 1.0 - (
-        factor
-        * _beta_continued_fraction(b, a, 1.0 - x)
-        / b
-    )
-
-
-def _correlation_p_value(coefficient, sample_size):
-    """Calculate a two-sided correlation p-value using Student's t test."""
-    if sample_size < 3 or not math.isfinite(coefficient):
-        return math.nan
-
-    coefficient = min(max(float(coefficient), -1.0), 1.0)
-    if abs(coefficient) == 1.0:
-        return 0.0
-
-    degrees_of_freedom = sample_size - 2
-    beta_argument = 1.0 - coefficient ** 2
-    p_value = _regularized_incomplete_beta(
-        degrees_of_freedom / 2.0,
-        0.5,
-        beta_argument,
-    )
-    return min(max(p_value, 0.0), 1.0)
-
-
-def _correlation_coefficient(x_values, y_values):
-    x_values = np.asarray(x_values, dtype=float)
-    y_values = np.asarray(y_values, dtype=float)
-
-    if len(x_values) != len(y_values) or len(x_values) < 2:
-        return math.nan
-    if np.ptp(x_values) == 0 or np.ptp(y_values) == 0:
-        return math.nan
-
-    return float(np.corrcoef(x_values, y_values)[0, 1])
-
-
-def pearson_correlation(x_values, y_values):
-    coefficient = _correlation_coefficient(x_values, y_values)
-    sample_size = len(x_values)
-
-    # Pearson's exact two-point test returns p=1 for either possible ordering.
-    if sample_size == 2 and math.isfinite(coefficient):
-        return coefficient, 1.0
-
-    return coefficient, _correlation_p_value(
-        coefficient,
-        sample_size,
-    )
-
-
-def spearman_correlation(x_values, y_values):
-    x_ranks = (
-        pd.Series(np.asarray(x_values, dtype=float))
-        .rank(method="average")
-        .to_numpy(dtype=float)
-    )
-    y_ranks = (
-        pd.Series(np.asarray(y_values, dtype=float))
-        .rank(method="average")
-        .to_numpy(dtype=float)
-    )
-
-    coefficient = _correlation_coefficient(x_ranks, y_ranks)
-    return coefficient, _correlation_p_value(
-        coefficient,
-        len(x_ranks),
-    )
-
-
 def clean_xy(data, x_col, y_col, log_x=False, log_y=False, label=None):
     cols = [x_col, y_col]
     if label:
@@ -613,13 +467,13 @@ def clean_xy(data, x_col, y_col, log_x=False, log_y=False, label=None):
     plot_data = data[cols].dropna().copy()
 
     if log_x:
-        plot_data = plot_data[plot_data[x_col] > 0]
+        plot_data = plot_data[plot_data[x_col] >= 0]
 
     if log_y:
-        plot_data = plot_data[plot_data[y_col] > 0]
+        plot_data = plot_data[plot_data[y_col] >= 0]
 
-    x_series = np.log10(plot_data[x_col]) if log_x else plot_data[x_col]
-    y_series = np.log10(plot_data[y_col]) if log_y else plot_data[y_col]
+    x_series = np.log10(plot_data[x_col] + 1) if log_x else plot_data[x_col]
+    y_series = np.log10(plot_data[y_col] + 1) if log_y else plot_data[y_col]
 
     x_unit = meta_dict.get(x_col, "")
     y_unit = meta_dict.get(y_col, "")
@@ -628,10 +482,10 @@ def clean_xy(data, x_col, y_col, log_x=False, log_y=False, label=None):
     y_label = f"{y_col} ({y_unit})" if y_unit else y_col
 
     if log_x:
-        x_label = f"log10({x_label})"
+        x_label = f"log10({x_label} + 1)"
 
     if log_y:
-        y_label = f"log10({y_label})"
+        y_label = f"log10({y_label} + 1)"
 
     return x_series, y_series, x_label, y_label, plot_data
 
@@ -696,63 +550,101 @@ def advanced_chart(data, values, meta_dict):
         group_col = values["-ADVANCED-GROUP-COL-"]
         selected_groups = values["-ADVANCED-GROUP-VALUES-"]
 
-        linear_regression_enabled = values[
-            "-ADVANCED-LINEAR-REGRESSION-"
-        ]
-
         label_enabled = values["-ADVANCED-LABELS?-"]
         label_col = values["-ADVANCED-LABEL-COL-"]
 
+        log_x_enabled = values["-ADVANCED-LOGX-"]
+        log_y_enabled = values["-ADVANCED-LOGY-"]
+        linear_regression_enabled = values["-ADVANCED-LINEAR-REGRESSION-"]
+        one_to_one_line_enabled = values["-ADVANCED-ONE-TO-ONE-LINE-"]
         pearson_cor_enabled = values["-ADVANCED-PEARSON-"]
         spearman_cor_enabled = values["-ADVANCED-SPEARMAN-"]
-
         confidence_intervals_enabled = values[
             "-ADVANCED-CONFIDENCE-INTERVALS-"
         ]
+        lower_limit_col = values.get("-ADVANCED-LOWER-LIMIT-COL-")
+        upper_limit_col = values.get("-ADVANCED-UPPER-LIMIT-COL-")
 
-        lower_limit_col = values.get(
-            "-ADVANCED-LOWER-LIMIT-COL-"
+        y2_enabled = values.get("-ADVANCED-Y2-ENABLED-", False)
+        y2_col = values.get("-ADVANCED-Y2-COL-")
+        y2_chart_type = values.get("-ADVANCED-Y2-TYPE-", "Plot")
+        y2_log_enabled = values.get("-ADVANCED-Y2-LOGY-", False)
+        y2_regression_enabled = values.get(
+            "-ADVANCED-Y2-LINEAR-REGRESSION-", False
         )
-        upper_limit_col = values.get(
-            "-ADVANCED-UPPER-LIMIT-COL-"
+        y2_pearson_enabled = values.get("-ADVANCED-Y2-PEARSON-", False)
+        y2_spearman_enabled = values.get("-ADVANCED-Y2-SPEARMAN-", False)
+        y2_confidence_enabled = values.get(
+            "-ADVANCED-Y2-CONFIDENCE-INTERVALS-", False
         )
-
-        log_x_enabled = values["-ADVANCED-LOGX-"]
-        log_y_enabled = values["-ADVANCED-LOGY-"]
-
-        correlation_lines = []
+        y2_lower_limit_col = values.get(
+            "-ADVANCED-Y2-LOWER-LIMIT-COL-"
+        )
+        y2_upper_limit_col = values.get(
+            "-ADVANCED-Y2-UPPER-LIMIT-COL-"
+        )
 
         if not x_col or not y_col:
-            sg.popup("Please select both X and Y columns.")
+            sg.popup("Please select both X and primary Y columns.")
+            return
+
+        if y2_enabled and not y2_col:
+            sg.popup("Please select a secondary Y variable.")
             return
 
         if label_enabled and not label_col:
             sg.popup("Please select a label column.")
             return
 
-        if confidence_intervals_enabled:
-            if not lower_limit_col or not upper_limit_col:
-                sg.popup(
-                    "Please select both lower and upper "
-                    "confidence interval columns."
-                )
+        if group_enabled:
+            if not group_col:
+                sg.popup("Please select a grouping column.")
+                return
+            if not selected_groups:
+                sg.popup("Please select at least one group value.")
                 return
 
-            missing_columns = [
-                col
-                for col in [lower_limit_col, upper_limit_col]
-                if col not in data.columns
+        def validate_interval(enabled, lower_col, upper_col, axis_name):
+            if not enabled:
+                return True
+            if not lower_col or not upper_col:
+                sg.popup(
+                    f"Please select both lower and upper confidence "
+                    f"interval columns for {axis_name}."
+                )
+                return False
+            missing = [
+                column
+                for column in (lower_col, upper_col)
+                if column not in data.columns
             ]
-
-            if missing_columns:
+            if missing:
                 sg.popup(
-                    "The following confidence interval columns "
-                    "were not found:\n\n"
-                    + "\n".join(missing_columns)
+                    f"The following {axis_name} confidence interval "
+                    "columns were not found:\n\n" + "\n".join(missing)
                 )
-                return
+                return False
+            return True
+
+        if not validate_interval(
+            confidence_intervals_enabled,
+            lower_limit_col,
+            upper_limit_col,
+            "primary Y",
+        ):
+            return
+
+        if not validate_interval(
+            y2_enabled and y2_confidence_enabled,
+            y2_lower_limit_col,
+            y2_upper_limit_col,
+            "secondary Y",
+        ):
+            return
 
         fig, ax = plt.subplots()
+        ax2 = ax.twinx() if y2_enabled else None
+        correlation_lines = []
 
         if values.get("-ADVANCED-SHADING-", False):
             add_season_shading(
@@ -765,370 +657,362 @@ def advanced_chart(data, values, meta_dict):
                 int(values.get("-DRY-RESTART-MONTH-", 11)),
             )
 
-        def handle_options(
-            plot_data_source,
-            label_name="All data",
+        def draw_series(
+            source,
+            target_ax,
+            selected_y_col,
+            selected_chart_type,
+            log_y,
+            series_name,
+            label_name,
+            draw_data=True,
             draw_regression=True,
-            draw_labels=True,
-            draw_confidence_interval=True,
+            draw_labels=False,
+            draw_confidence=False,
+            lower_col=None,
+            upper_col=None,
+            regression_enabled=False,
+            pearson_enabled=False,
+            spearman_enabled=False,
         ):
-            (
-                x_series,
-                y_series,
-                x_label,
-                y_label,
-                plot_data,
-            ) = clean_xy(
-                plot_data_source,
+            x_series, y_series, x_label, y_label, plot_data = clean_xy(
+                source,
                 x_col,
-                y_col,
+                selected_y_col,
                 log_x_enabled,
-                log_y_enabled,
-                label=label_col if label_enabled else None,
+                log_y,
+                label=label_col if (label_enabled and draw_labels) else None,
             )
 
-            if len(x_series) < 2:
-                return
+            if draw_data:
+                display_label = (
+                    f"{series_name}: {label_name} (n={len(plot_data)})"
+                    if group_enabled
+                    else series_name
+                )
+                if selected_chart_type == "Plot":
+                    target_ax.plot(
+                        x_series,
+                        y_series,
+                        marker="o",
+                        label=display_label,
+                    )
+                else:
+                    target_ax.scatter(
+                        x_series,
+                        y_series,
+                        label=display_label,
+                    )
 
-            x_values = np.asarray(x_series)
-            y_values = np.asarray(y_series, dtype=float)
+            if len(plot_data) >= 2:
+                x_values = np.asarray(x_series)
+                y_values = np.asarray(y_series, dtype=float)
 
-            if linear_regression_enabled and draw_regression:
-                # Linear regression requires a numeric X axis.
-                if np.issubdtype(x_values.dtype, np.number):
-                    regression_mask = (
+                numeric_x = np.issubdtype(x_values.dtype, np.number)
+                if numeric_x:
+                    finite_mask = (
                         np.isfinite(x_values)
                         & np.isfinite(y_values)
                     )
+                    statistic_x = x_values[finite_mask]
+                    statistic_y = y_values[finite_mask]
+                else:
+                    statistic_x = np.array([])
+                    statistic_y = np.array([])
 
-                    regression_x = x_values[regression_mask]
-                    regression_y = y_values[regression_mask]
-
-                    if len(regression_x) >= 2:
-                        m, b = np.polyfit(
-                            regression_x,
-                            regression_y,
-                            1,
-                        )
-
-                        x_line = np.linspace(
-                            regression_x.min(),
-                            regression_x.max(),
-                            100,
-                        )
-                        y_line = m * x_line + b
-
-                        ax.plot(
-                            x_line,
-                            y_line,
-                            "--",
-                            color="black",
-                            linewidth=2,
-                            label="Line of best fit",
-                        )
-
-                        correlation_lines.append(
-                            f"{label_name} linear regression: "
-                            f"y = {m:.3f}x + {b:.3f}"
-                        )
-
-            if pearson_cor_enabled:
-                if np.issubdtype(x_values.dtype, np.number):
-                    correlation_mask = (
-                        np.isfinite(x_values)
-                        & np.isfinite(y_values)
+                if (
+                    regression_enabled
+                    and draw_regression
+                    and len(statistic_x) >= 2
+                ):
+                    regression = linregress(statistic_x, statistic_y)
+                    x_line = np.linspace(
+                        statistic_x.min(), statistic_x.max(), 100
+                    )
+                    y_line = regression.slope * x_line + regression.intercept
+                    target_ax.plot(
+                        x_line,
+                        y_line,
+                        "--",
+                        linewidth=2,
+                        label=f"{series_name} line of best fit",
+                    )
+                    correlation_lines.append(
+                        f"{series_name} — {label_name} linear regression: "
+                        f"y = {regression.slope:.3f}x "
+                        f"+ {regression.intercept:.3f}"
                     )
 
-                    correlation_x = x_values[correlation_mask]
-                    correlation_y = y_values[correlation_mask]
-
-                    if len(correlation_x) >= 2:
-                        r, p = pearson_correlation(
-                            correlation_x,
-                            correlation_y,
-                        )
-
-                        correlation_lines.append(
-                            f"{label_name} Pearson: "
-                            f"r={r:.3f}, "
-                            f"R²={r ** 2:.3f}, "
-                            f"p={p:.3g}, "
-                            f"n={len(correlation_x)}"
-                        )
-
-            if spearman_cor_enabled:
-                if np.issubdtype(x_values.dtype, np.number):
-                    correlation_mask = (
-                        np.isfinite(x_values)
-                        & np.isfinite(y_values)
+                if pearson_enabled and len(statistic_x) >= 2:
+                    result = pearsonr(statistic_x, statistic_y)
+                    r = float(result.statistic)
+                    p = float(result.pvalue)
+                    correlation_lines.append(
+                        f"{series_name} — {label_name} Pearson: "
+                        f"r={r:.3f}, R²={r ** 2:.3f}, "
+                        f"p={p:.3g}, n={len(statistic_x)}"
                     )
 
-                    correlation_x = x_values[correlation_mask]
-                    correlation_y = y_values[correlation_mask]
-
-                    if len(correlation_x) >= 2:
-                        rho, p = spearman_correlation(
-                            correlation_x,
-                            correlation_y,
-                        )
-
-                        correlation_lines.append(
-                            f"{label_name} Spearman: "
-                            f"ρ={rho:.3f}, "
-                            f"p={p:.3g}, "
-                            f"n={len(correlation_x)}"
-                        )
+                if spearman_enabled and len(statistic_x) >= 2:
+                    result = spearmanr(statistic_x, statistic_y)
+                    rho = float(result.statistic)
+                    p = float(result.pvalue)
+                    correlation_lines.append(
+                        f"{series_name} — {label_name} Spearman: "
+                        f"ρ={rho:.3f}, p={p:.3g}, "
+                        f"n={len(statistic_x)}"
+                    )
 
             if label_enabled and draw_labels:
-                for label, x, y in zip(
-                    plot_data[label_col],
-                    x_series,
-                    y_series,
+                for point_label, x_value, y_value in zip(
+                    plot_data[label_col], x_series, y_series
                 ):
-                    ax.annotate(
-                        str(label),
-                        (x, y),
+                    target_ax.annotate(
+                        str(point_label),
+                        (x_value, y_value),
                         textcoords="offset points",
                         xytext=(4, 4),
                         fontsize=selected_chart_data_label_font_size,
                     )
 
-            if (
-                confidence_intervals_enabled
-                and draw_confidence_interval
-            ):
-                if (
-                        confidence_intervals_enabled
-                        and draw_confidence_interval
-                ):
-                    # clean_xy may return only X, Y, and label columns.
-                    # Use its retained indexes to retrieve the corresponding
-                    # confidence limits from the original data source.
-                    retained_index = plot_data.index
+            if draw_confidence and lower_col and upper_col:
+                retained_index = plot_data.index
+                lower_values = pd.to_numeric(
+                    source.loc[retained_index, lower_col],
+                    errors="coerce",
+                ).to_numpy(dtype=float)
+                upper_values = pd.to_numeric(
+                    source.loc[retained_index, upper_col],
+                    errors="coerce",
+                ).to_numpy(dtype=float)
+                interval_x = np.asarray(x_series)
 
-                    lower_values = pd.to_numeric(
-                        plot_data_source.loc[
-                            retained_index,
-                            lower_limit_col,
-                        ],
-                        errors="coerce",
-                    ).to_numpy(dtype=float)
+                interval_mask = (
+                    pd.notna(interval_x)
+                    & np.isfinite(lower_values)
+                    & np.isfinite(upper_values)
+                )
 
-                    upper_values = pd.to_numeric(
-                        plot_data_source.loc[
-                            retained_index,
-                            upper_limit_col,
-                        ],
-                        errors="coerce",
-                    ).to_numpy(dtype=float)
-
-                    interval_x = np.asarray(x_series)
-
-                    # Only draw an interval where X, lower, and upper
-                    # values are all available.
-                    interval_mask = (
-                            pd.notna(interval_x)
-                            & np.isfinite(lower_values)
-                            & np.isfinite(upper_values)
+                if log_y:
+                    interval_mask &= (
+                        (lower_values >= 0)
+                        & (upper_values >= 0)
+                    )
+                    lower_values = np.where(
+                        lower_values >= 0,
+                        np.log10(lower_values + 1),
+                        np.nan,
+                    )
+                    upper_values = np.where(
+                        upper_values >= 0,
+                        np.log10(upper_values + 1),
+                        np.nan,
                     )
 
-                    if log_y_enabled:
-                        interval_mask &= (
-                                (lower_values > 0)
-                                & (upper_values > 0)
-                        )
+                valid_x = interval_x[interval_mask]
+                valid_lower = lower_values[interval_mask]
+                valid_upper = upper_values[interval_mask]
 
-                        lower_values = np.where(
-                            lower_values > 0,
-                            np.log10(lower_values),
-                            np.nan,
-                        )
+                if len(valid_x) >= 2:
+                    order = np.argsort(valid_x)
+                    target_ax.fill_between(
+                        valid_x[order],
+                        np.minimum(
+                            valid_lower[order], valid_upper[order]
+                        ),
+                        np.maximum(
+                            valid_lower[order], valid_upper[order]
+                        ),
+                        alpha=0.2,
+                        label=f"{series_name} confidence interval",
+                    )
 
-                        upper_values = np.where(
-                            upper_values > 0,
-                            np.log10(upper_values),
-                            np.nan,
-                        )
-
-                    valid_x = interval_x[interval_mask]
-                    valid_lower = lower_values[interval_mask]
-                    valid_upper = upper_values[interval_mask]
-
-                    if len(valid_x) >= 2:
-                        sort_order = np.argsort(valid_x)
-
-                        valid_x = valid_x[sort_order]
-                        valid_lower = valid_lower[sort_order]
-                        valid_upper = valid_upper[sort_order]
-
-                        ax.fill_between(
-                            valid_x,
-                            np.minimum(valid_lower, valid_upper),
-                            np.maximum(valid_lower, valid_upper),
-                            alpha=0.2,
-                            label=f"{label_name} confidence interval",
-                        )
+            return x_label, y_label, len(plot_data)
 
         if group_enabled:
-            if not group_col:
-                sg.popup("Please select a grouping column.")
-                return
-
-            if not selected_groups:
-                sg.popup(
-                    "Please select at least one group value."
-                )
-                return
-
-            total_n = 0
-
-            selected_group_strings = [
-                str(group)
-                for group in selected_groups
-            ]
-
+            selected_group_strings = [str(v) for v in selected_groups]
             all_group_data = data[
-                data[group_col]
-                .astype(str)
-                .isin(selected_group_strings)
+                data[group_col].astype(str).isin(selected_group_strings)
             ]
+            total_n = 0
 
             for group_value in selected_groups:
                 group_data = data[
-                    data[group_col].astype(str)
-                    == str(group_value)
+                    data[group_col].astype(str) == str(group_value)
                 ]
-
-                (
-                    x_series,
-                    y_series,
-                    x_label,
-                    y_label,
-                    plot_data,
-                ) = clean_xy(
+                x_label, y_label, count = draw_series(
                     group_data,
-                    x_col,
+                    ax,
                     y_col,
-                    log_x_enabled,
+                    chart_type,
                     log_y_enabled,
-                    label=(
-                        label_col
-                        if label_enabled
-                        else None
-                    ),
-                )
-
-                total_n += len(plot_data)
-
-                group_label = (
-                    f"{group_value} "
-                    f"(n={len(plot_data)})"
-                )
-
-                if chart_type == "Plot":
-                    ax.plot(
-                        x_series,
-                        y_series,
-                        marker="o",
-                        label=group_label,
-                    )
-
-                elif chart_type == "Scatter":
-                    ax.scatter(
-                        x_series,
-                        y_series,
-                        label=group_label,
-                    )
-
-                handle_options(
-                    group_data,
-                    label_name=str(group_value),
+                    y_col,
+                    str(group_value),
+                    draw_data=True,
                     draw_regression=False,
                     draw_labels=True,
-                    draw_confidence_interval=True,
+                    draw_confidence=confidence_intervals_enabled,
+                    lower_col=lower_limit_col,
+                    upper_col=upper_limit_col,
+                    regression_enabled=linear_regression_enabled,
+                    pearson_enabled=pearson_cor_enabled,
+                    spearman_enabled=spearman_cor_enabled,
                 )
+                total_n += count
 
-            # Calculate regression and correlations across all selected
-            # groups, but do not add another combined confidence band.
-            handle_options(
+                if y2_enabled:
+                    _, y2_label, _ = draw_series(
+                        group_data,
+                        ax2,
+                        y2_col,
+                        y2_chart_type,
+                        y2_log_enabled,
+                        y2_col,
+                        str(group_value),
+                        draw_data=True,
+                        draw_regression=False,
+                        draw_labels=False,
+                        draw_confidence=y2_confidence_enabled,
+                        lower_col=y2_lower_limit_col,
+                        upper_col=y2_upper_limit_col,
+                        regression_enabled=y2_regression_enabled,
+                        pearson_enabled=y2_pearson_enabled,
+                        spearman_enabled=y2_spearman_enabled,
+                    )
+
+            draw_series(
                 all_group_data,
-                label_name="All selected groups",
+                ax,
+                y_col,
+                chart_type,
+                log_y_enabled,
+                y_col,
+                "All selected groups",
+                draw_data=False,
                 draw_regression=True,
                 draw_labels=False,
-                draw_confidence_interval=False,
+                draw_confidence=False,
+                regression_enabled=linear_regression_enabled,
+                pearson_enabled=pearson_cor_enabled,
+                spearman_enabled=spearman_cor_enabled,
             )
 
-            ax.set_title(
-                f"{y_label} as a function of {x_label}, "
-                f"grouped by {group_col} (n={total_n})"
-            )
+            if y2_enabled:
+                draw_series(
+                    all_group_data,
+                    ax2,
+                    y2_col,
+                    y2_chart_type,
+                    y2_log_enabled,
+                    y2_col,
+                    "All selected groups",
+                    draw_data=False,
+                    draw_regression=True,
+                    draw_labels=False,
+                    draw_confidence=False,
+                    regression_enabled=y2_regression_enabled,
+                    pearson_enabled=y2_pearson_enabled,
+                    spearman_enabled=y2_spearman_enabled,
+                )
 
+            title = (
+                f"{y_label}"
+                + (f" and {y2_label}" if y2_enabled else "")
+                + f" as a function of {x_label}, "
+                f"grouped by {group_col} (primary n={total_n})"
+            )
         else:
-            (
-                x_series,
-                y_series,
-                x_label,
-                y_label,
-                plot_data,
-            ) = clean_xy(
+            x_label, y_label, primary_n = draw_series(
                 data,
-                x_col,
+                ax,
                 y_col,
-                log_x_enabled,
+                chart_type,
                 log_y_enabled,
-                label=(
-                    label_col
-                    if label_enabled
-                    else None
-                ),
-            )
-
-            ax.set_title(
-                f"{y_label} as a function of {x_label} "
-                f"(n={len(plot_data)})"
-            )
-
-            if chart_type == "Plot":
-                ax.plot(
-                    x_series,
-                    y_series,
-                    label=y_label,
-                )
-
-            elif chart_type == "Scatter":
-                ax.scatter(
-                    x_series,
-                    y_series,
-                    label=y_label,
-                )
-
-            handle_options(
-                data,
-                label_name="All data",
+                y_col,
+                "All data",
+                draw_data=True,
                 draw_regression=True,
                 draw_labels=True,
-                draw_confidence_interval=True,
+                draw_confidence=confidence_intervals_enabled,
+                lower_col=lower_limit_col,
+                upper_col=upper_limit_col,
+                regression_enabled=linear_regression_enabled,
+                pearson_enabled=pearson_cor_enabled,
+                spearman_enabled=spearman_cor_enabled,
             )
 
+            if y2_enabled:
+                _, y2_label, secondary_n = draw_series(
+                    data,
+                    ax2,
+                    y2_col,
+                    y2_chart_type,
+                    y2_log_enabled,
+                    y2_col,
+                    "All data",
+                    draw_data=True,
+                    draw_regression=True,
+                    draw_labels=False,
+                    draw_confidence=y2_confidence_enabled,
+                    lower_col=y2_lower_limit_col,
+                    upper_col=y2_upper_limit_col,
+                    regression_enabled=y2_regression_enabled,
+                    pearson_enabled=y2_pearson_enabled,
+                    spearman_enabled=y2_spearman_enabled,
+                )
+                title = (
+                    f"{y_label} and {y2_label} as a function of "
+                    f"{x_label} (n₁={primary_n}, n₂={secondary_n})"
+                )
+            else:
+                title = (
+                    f"{y_label} as a function of "
+                    f"{x_label} (n={primary_n})"
+                )
+
+        if one_to_one_line_enabled:
+            ax.relim()
+            ax.autoscale_view()
+            x_limits = ax.get_xlim()
+            y_limits = ax.get_ylim()
+            line_min = max(x_limits[0], y_limits[0])
+            line_max = min(x_limits[1], y_limits[1])
+            if line_min < line_max:
+                ax.plot(
+                    [line_min, line_max],
+                    [line_min, line_max],
+                    linestyle=":",
+                    color="black",
+                    linewidth=2,
+                    label="1:1 reference line",
+                )
+
+        ax.set_title(title)
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
 
+        if y2_enabled:
+            ax2.set_ylabel(y2_label)
+            ax2.grid(False)
+
         handles, legend_labels = ax.get_legend_handles_labels()
+        if y2_enabled:
+            handles2, labels2 = ax2.get_legend_handles_labels()
+            handles += handles2
+            legend_labels += labels2
 
         if handles:
             ax.legend(
+                handles,
+                legend_labels,
                 facecolor="white",
                 edgecolor="black",
                 framealpha=1,
             )
 
         if correlation_lines:
-            report_fig, report_ax = plt.subplots(
-                figsize=(10, 6)
-            )
-
+            report_fig, report_ax = plt.subplots(figsize=(10, 6))
             report_ax.axis("off")
-
             report_ax.text(
                 0.01,
                 0.98,
@@ -1138,7 +1022,6 @@ def advanced_chart(data, values, meta_dict):
                 transform=report_ax.transAxes,
                 fontsize=selected_chart_report_text_font_size,
             )
-
             report_fig.suptitle(
                 "Statistical Report",
                 fontweight="bold",
@@ -1154,10 +1037,8 @@ def advanced_chart(data, values, meta_dict):
             "Possible causes:\n"
             "• Log10 can only be applied to numeric data.\n"
             "• Dates and text cannot be log-transformed.\n"
-            "• The selected columns may contain incompatible "
-            "data types."
+            "• The selected columns may contain incompatible data types."
         )
-
 
 def stretch_scrollable_column_x(window, key):
     col = window[key]
@@ -1202,6 +1083,22 @@ def initialize_inputs(data):
     window["-ADVANCED-Y-"].update(
         values=number_columns,
         value=saved_choice("-ADVANCED-Y-", number_columns, default_y),
+    )
+    window["-ADVANCED-Y2-COL-"].update(
+        values=number_columns,
+        value=saved_choice("-ADVANCED-Y2-COL-", number_columns),
+    )
+    window["-ADVANCED-Y2-LOWER-LIMIT-COL-"].update(
+        values=number_columns,
+        value=saved_choice(
+            "-ADVANCED-Y2-LOWER-LIMIT-COL-", number_columns
+        ),
+    )
+    window["-ADVANCED-Y2-UPPER-LIMIT-COL-"].update(
+        values=number_columns,
+        value=saved_choice(
+            "-ADVANCED-Y2-UPPER-LIMIT-COL-", number_columns
+        ),
     )
     group_col = saved_choice(
         "-ADVANCED-GROUP-COL-", columns
@@ -1444,6 +1341,11 @@ advanced_chart_inner = [
             default=saved_boolean("-ADVANCED-LINEAR-REGRESSION-"),
         ),
         sg.Checkbox(
+            "1:1 Reference Line",
+            key="-ADVANCED-ONE-TO-ONE-LINE-",
+            default=saved_boolean("-ADVANCED-ONE-TO-ONE-LINE-"),
+        ),
+        sg.Checkbox(
             "Pearson Correlation",
             key="-ADVANCED-PEARSON-",
             default=saved_boolean("-ADVANCED-PEARSON-"),
@@ -1591,6 +1493,85 @@ advanced_chart_inner = [
             pad=(0, 15),
         ),
     ],  # Upper limit column,
+    [sg.HSep(pad=(0, 30))],
+    [sg.Text("Second Y Axis:", font=("Arial", 14, "bold"), pad=(0, 30))],
+    [
+        sg.Checkbox(
+            "Activate second Y axis",
+            key="-ADVANCED-Y2-ENABLED-",
+            default=saved_boolean("-ADVANCED-Y2-ENABLED-"),
+        ),
+    ],
+    [
+        sg.Text("Second Y variable:"),
+        sg.Combo(
+            key="-ADVANCED-Y2-COL-",
+            values=[],
+            readonly=True,
+            expand_x=True,
+            pad=(0, 15),
+        ),
+        sg.Text("Chart type:"),
+        sg.Combo(
+            key="-ADVANCED-Y2-TYPE-",
+            values=CHART_TYPES,
+            default_value=saved_choice(
+                "-ADVANCED-Y2-TYPE-", CHART_TYPES, "Plot"
+            ),
+            readonly=True,
+        ),
+    ],
+    [
+        sg.Checkbox(
+            "Log10 second Y",
+            key="-ADVANCED-Y2-LOGY-",
+            default=saved_boolean("-ADVANCED-Y2-LOGY-"),
+        ),
+        sg.Checkbox(
+            "Linear Regression",
+            key="-ADVANCED-Y2-LINEAR-REGRESSION-",
+            default=saved_boolean("-ADVANCED-Y2-LINEAR-REGRESSION-"),
+        ),
+        sg.Checkbox(
+            "Pearson Correlation",
+            key="-ADVANCED-Y2-PEARSON-",
+            default=saved_boolean("-ADVANCED-Y2-PEARSON-"),
+        ),
+        sg.Checkbox(
+            "Spearman Correlation",
+            key="-ADVANCED-Y2-SPEARMAN-",
+            default=saved_boolean("-ADVANCED-Y2-SPEARMAN-"),
+        ),
+    ],
+    [
+        sg.Checkbox(
+            "Enable second Y confidence intervals",
+            key="-ADVANCED-Y2-CONFIDENCE-INTERVALS-",
+            default=saved_boolean(
+                "-ADVANCED-Y2-CONFIDENCE-INTERVALS-"
+            ),
+        ),
+    ],
+    [
+        sg.Text("Second Y lower limit column:"),
+        sg.Combo(
+            key="-ADVANCED-Y2-LOWER-LIMIT-COL-",
+            values=[],
+            readonly=True,
+            expand_x=True,
+            pad=(0, 15),
+        ),
+    ],
+    [
+        sg.Text("Second Y upper limit column:"),
+        sg.Combo(
+            key="-ADVANCED-Y2-UPPER-LIMIT-COL-",
+            values=[],
+            readonly=True,
+            expand_x=True,
+            pad=(0, 15),
+        ),
+    ],
 
 ]
 advanced_chart_contents = [
