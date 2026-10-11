@@ -135,6 +135,8 @@ CHECKBOX_KEYS = [
     "-SIMPLE-LOGY-",
     "-ADVANCED-LOGX-",
     "-ADVANCED-LOGY-",
+    "-ADVANCED-INVERT-X-AXIS-",
+    "-ADVANCED-INVERT-Y-AXIS-",
     "-ADVANCED-GROUP?-",
     "-ADVANCED-LABELS?-",
     "-ADVANCED-LINEAR-REGRESSION-",
@@ -544,6 +546,8 @@ def advanced_chart(data, values, meta_dict):
     try:
         x_col = values["-ADVANCED-X-"]
         y_col = values["-ADVANCED-Y-"]
+        invert_x = values.get("-ADVANCED-INVERT-X-AXIS-", False)
+        invert_y = values.get("-ADVANCED-INVERT-Y-AXIS-", False)
         chart_type = values["-ADVANCED-TYPE-"]
 
         group_enabled = values["-ADVANCED-GROUP?-"]
@@ -644,6 +648,10 @@ def advanced_chart(data, values, meta_dict):
 
         fig, ax = plt.subplots()
         ax2 = ax.twinx() if y2_enabled else None
+        if ax2 is not None:
+            # Start the secondary axis at a different color from the primary axis.
+            colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+            ax2.set_prop_cycle(color=colors[1:] + colors[:1])
         correlation_lines = []
 
         if values.get("-ADVANCED-SHADING-", False):
@@ -690,17 +698,22 @@ def advanced_chart(data, values, meta_dict):
                     if group_enabled
                     else series_name
                 )
+                # Distinguish primary (circles) from secondary (triangles).
+                marker_style = "^" if target_ax is ax2 else "o"
                 if selected_chart_type == "Plot":
                     target_ax.plot(
                         x_series,
                         y_series,
-                        marker="o",
+                        marker=marker_style,
+                        markersize=8,
                         label=display_label,
                     )
                 else:
                     target_ax.scatter(
                         x_series,
                         y_series,
+                        marker=marker_style,
+                        s=60,
                         label=display_label,
                     )
 
@@ -990,6 +1003,42 @@ def advanced_chart(data, values, meta_dict):
         ax.set_title(title)
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
+
+        if invert_x:
+            ax.invert_xaxis()
+
+        if invert_y:
+            # Invert Y-axis (depth increases downward)
+            ax.invert_yaxis()
+
+            # Move X-axis to the top
+            ax.xaxis.tick_top()
+            ax.xaxis.set_label_position("top")
+
+            # Remove unnecessary borders
+            ax.spines["bottom"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            # Keep only top and left axes
+            ax.spines["top"].set_visible(True)
+            ax.spines["left"].set_visible(True)
+
+
+            # Apply to secondary Y-axis if enabled
+            if ax2 is not None:
+                ax2.invert_yaxis()
+                ax2.grid(False)
+
+                # Hide secondary X-axis decorations
+                ax2.xaxis.set_visible(False)
+
+                # Hide unnecessary borders
+                ax2.spines["bottom"].set_visible(False)
+                ax2.spines["top"].set_visible(False)
+                ax2.spines["left"].set_visible(False)
+
+                # Keep secondary Y-axis on the right
+                ax2.spines["right"].set_visible(True)
 
         if y2_enabled:
             ax2.set_ylabel(y2_label)
@@ -1312,6 +1361,18 @@ advanced_chart_inner = [
         sg.Text("Y:"),
         sg.Combo(key="-ADVANCED-Y-", values=[], readonly=True, expand_x=True),
     ], #chose x and y
+    [
+        sg.Checkbox(
+            "Invert x-axis",
+            key="-ADVANCED-INVERT-X-AXIS-",
+            default=saved_boolean("-ADVANCED-INVERT-X-AXIS-"),
+        ),
+        sg.Checkbox(
+            "Invert y-axis",
+            key="-ADVANCED-INVERT-Y-AXIS-",
+            default=saved_boolean("-ADVANCED-INVERT-Y-AXIS-"),
+        ),
+    ],
     [
         sg.Text("Chart type:", pad=(0, 30)),
         sg.Combo(
